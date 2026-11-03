@@ -401,6 +401,7 @@ static int usb_psy_get_prop(struct power_supply *psy,
 	struct oplus_gki_device *chip = power_supply_get_drvdata(psy);
 	union mms_msg_data data = { 0 };
 	int usb_temp_l, usb_temp_r;
+	int vbus_mv = 0, ibus_ma = 0;
 	int rc = 0;
 
 	switch (prop) {
@@ -421,6 +422,13 @@ static int usb_psy_get_prop(struct power_supply *psy,
 		pval->intval = oplus_wired_get_vbus() * 1000;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		if (chip->wired_online && !chip->vooc_online && !chip->vooc_charging) {
+			vbus_mv = oplus_wired_get_vbus();
+			if (vbus_mv > 0) {
+				pval->intval = vbus_mv * 1000;
+				break;
+			}
+		}
 		pval->intval =
 			oplus_wired_get_voltage_max(chip->wired_topic) * 1000;
 		break;
@@ -428,6 +436,25 @@ static int usb_psy_get_prop(struct power_supply *psy,
 		pval->intval =  oplus_wired_get_ibus() * 1000;
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		if (chip->wired_online && (chip->vooc_charging || chip->vooc_online) &&
+		    chip->gauge_topic) {
+			rc = oplus_mms_get_item_data(
+				(is_support_parallel_battery(chip->gauge_topic) &&
+				 is_main_gauge_topic_available(chip)) ?
+				chip->main_gauge_topic : chip->gauge_topic,
+				GAUGE_ITEM_CURR, &data, true);
+			if (rc == 0 && data.intval < 0) {
+				pval->intval = (-data.intval) * 1000;
+				break;
+			}
+			rc = 0;
+		} else if (chip->wired_online) {
+			ibus_ma = oplus_wired_get_ibus();
+			if (ibus_ma > 0) {
+				pval->intval = ibus_ma * 1000;
+				break;
+			}
+		}
 		if (is_wired_icl_votable_available(chip))
 			pval->intval = get_client_vote_locked(chip->wired_icl_votable,
 						       SPEC_VOTER) *
@@ -682,6 +709,63 @@ static int oplus_gki_get_batt_status(struct oplus_gki_device *chip)
 
 #define KPOC_FORCE_VBUS_MV 5000
 #define FORCE_VBUS_5V_TIME 10000
+
+static int oplus_gki_calc_ttf(struct oplus_gki_device *chip)
+{
+	static int avg_curr_ma;
+	static int prev_cool_down;
+	union mms_msg_data data = { 0 };
+	struct votable *cool_down_votable;
+	int user_vote = 0;
+	int soc = oplus_gki_get_ui_soc(chip);
+	int rc, ibat_ma, diff_ma, batt_num, fcc_mah, cell_mah, fast_rem, taper_rem;
+
+	if (soc >= 100 || (!chip->wired_online && !chip->wls_online) ||
+	    chip->batt_status != POWER_SUPPLY_STATUS_CHARGING) {
+		avg_curr_ma = 0;
+		return 0;
+	}
+
+	cool_down_votable = find_votable("COOL_DOWN");
+	if (cool_down_votable)
+		user_vote = max(get_client_vote(cool_down_votable, USER_VOTER), 0);
+
+	if (user_vote == 0 && chip->time_to_full > 0) {
+		prev_cool_down = 0;
+		return chip->time_to_full;
+	}
+
+	rc = oplus_mms_get_item_data(
+		(is_support_parallel_battery(chip->gauge_topic) &&
+		 is_main_gauge_topic_available(chip)) ?
+		chip->main_gauge_topic : chip->gauge_topic,
+		GAUGE_ITEM_CURR, &data, true);
+	ibat_ma = -data.intval;
+	if (rc < 0 || ibat_ma < 150)
+		return 0;
+
+	if (user_vote == 1 && ibat_ma > 1500)
+		ibat_ma = 1500;
+	else if (user_vote >= 2 && ibat_ma > 3000)
+		ibat_ma = 3000;
+
+	diff_ma = abs(ibat_ma - avg_curr_ma);
+	if (avg_curr_ma <= 0 || prev_cool_down != user_vote || diff_ma > 700)
+		avg_curr_ma = ibat_ma;
+	else
+		avg_curr_ma = (avg_curr_ma * 3 + ibat_ma) / 4;
+	prev_cool_down = user_vote;
+
+	batt_num = is_support_parallel_battery(chip->gauge_topic) ?
+		1 : max(oplus_gauge_get_batt_num(), 1);
+	fcc_mah = chip->batt_fcc > 1600 ? chip->batt_fcc : 5200;
+	cell_mah = fcc_mah / batt_num;
+	fast_rem = soc < 88 ? 88 - soc : 0;
+	taper_rem = 100 - min(soc, 88);
+
+	return (cell_mah * fast_rem * 36) / min(avg_curr_ma, 5800) +
+	       (cell_mah * taper_rem * 36) / min(avg_curr_ma, 1400);
+}
 static int battery_psy_get_prop(struct power_supply *psy,
 		enum power_supply_property prop,
 		union power_supply_propval *pval)
@@ -784,7 +868,7 @@ static int battery_psy_get_prop(struct power_supply *psy,
 		else
 			rc = oplus_mms_get_item_data(chip->gauge_topic, GAUGE_ITEM_CURR,
 						     &data, (chip->wired_online || chip->wls_online));
-		pval->intval = data.intval;
+		pval->intval = data.intval * 1000;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
 		pval->intval = 6500000;
@@ -835,10 +919,7 @@ static int battery_psy_get_prop(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_TIME_TO_FULL_AVG:
 	case POWER_SUPPLY_PROP_TIME_TO_FULL_NOW:
-		if (chip->time_to_full > 0 && oplus_gki_get_ui_soc(chip) == 100)
-			pval->intval = 0;
-		else
-			pval->intval = chip->time_to_full;
+		pval->intval = oplus_gki_calc_ttf(chip);
 		break;
 	case POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG:
 		pval->intval = 3600;

@@ -1290,6 +1290,11 @@ static ssize_t fast_charge_show(struct device *dev,
 			fastchg = true;
 	}
 
+#ifdef CONFIG_OPLUS_SMART_CHARGER_SUPPORT
+	if (is_cool_down_votable_available(chip) &&
+	    get_client_vote(chip->cool_down_votable, USER_VOTER) > 0)
+		fastchg = false;
+#endif
 	return sprintf(buf, "%d\n", fastchg);
 }
 static DEVICE_ATTR_RO(fast_charge);
@@ -4423,6 +4428,7 @@ static int oplus_usb_dir_create(struct oplus_configfs_device *chip)
 		}
 	}
 
+	kobject_uevent(&chip->oplus_usb_dir->kobj, KOBJ_CHANGE);
 	return 0;
 }
 
@@ -4474,6 +4480,7 @@ static int oplus_battery_dir_create(struct oplus_configfs_device *chip)
 		}
 	}
 
+	kobject_uevent(&chip->oplus_battery_dir->kobj, KOBJ_CHANGE);
 	return 0;
 }
 
@@ -4530,6 +4537,7 @@ static int oplus_wireless_dir_create(struct oplus_configfs_device *chip)
 		}
 	}
 
+	kobject_uevent(&chip->oplus_wireless_dir->kobj, KOBJ_CHANGE);
 	return 0;
 }
 
@@ -4581,6 +4589,7 @@ static int oplus_common_dir_create(struct oplus_configfs_device *chip)
 		}
 	}
 
+	kobject_uevent(&chip->oplus_common_dir->kobj, KOBJ_CHANGE);
 	return 0;
 }
 
@@ -4623,6 +4632,7 @@ int oplus_usb_node_add(struct device_attribute **usb_attributes)
 		}
 	}
 
+	kobject_uevent(&chip->oplus_usb_dir->kobj, KOBJ_CHANGE);
 	return 0;
 }
 
@@ -4668,6 +4678,7 @@ int oplus_battery_node_add(struct device_attribute **battery_attributes)
 		}
 	}
 
+	kobject_uevent(&chip->oplus_battery_dir->kobj, KOBJ_CHANGE);
 	return 0;
 }
 
@@ -4713,6 +4724,7 @@ int oplus_wireless_node_add(struct device_attribute **wireless_attributes)
 		}
 	}
 
+	kobject_uevent(&chip->oplus_wireless_dir->kobj, KOBJ_CHANGE);
 	return 0;
 }
 
@@ -4758,6 +4770,7 @@ int oplus_common_node_add(struct device_attribute **common_attributes)
 		}
 	}
 
+	kobject_uevent(&chip->oplus_common_dir->kobj, KOBJ_CHANGE);
 	return 0;
 }
 
@@ -5114,6 +5127,7 @@ static void oplus_configfs_vooc_subs_callback(struct mms_subscribe *subs,
 {
 	struct oplus_configfs_device *chip = subs->priv_data;
 	union mms_msg_data data = { 0 };
+	struct power_supply *batt_psy;
 
 	switch (type) {
 	case MSG_TYPE_ITEM:
@@ -5132,6 +5146,11 @@ static void oplus_configfs_vooc_subs_callback(struct mms_subscribe *subs,
 			oplus_mms_get_item_data(chip->vooc_topic, id, &data,
 						false);
 			chip->vooc_online = data.intval;
+			batt_psy = power_supply_get_by_name("battery");
+			if (batt_psy) {
+				power_supply_changed(batt_psy);
+				power_supply_put(batt_psy);
+			}
 			break;
 		case VOOC_ITEM_SID:
 			oplus_mms_get_item_data(chip->vooc_topic, id, &data,
@@ -5142,6 +5161,11 @@ static void oplus_configfs_vooc_subs_callback(struct mms_subscribe *subs,
 			oplus_mms_get_item_data(chip->vooc_topic, id, &data,
 						false);
 			chip->vooc_online_keep = (unsigned int)data.intval;
+			batt_psy = power_supply_get_by_name("battery");
+			if (batt_psy) {
+				power_supply_changed(batt_psy);
+				power_supply_put(batt_psy);
+			}
 			break;
 		default:
 			break;
