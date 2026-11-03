@@ -3860,7 +3860,7 @@ static irqreturn_t oplus_adfr_test_te_irq_handler(int irq, void *data)
 	if (p_oplus_adfr_params->test_te.config != OPLUS_ADFR_TEST_TE_DISABLE) {
 		/* check the test te interval to calculate refresh rate of ddic */
 		current_timestamp = (u64)ktime_to_ms(ktime_get());
-		temp_refresh_rate = 1000 / (current_timestamp - p_oplus_adfr_params->test_te.last_timestamp);
+		temp_refresh_rate = 1000 / max_t(u64, current_timestamp - p_oplus_adfr_params->test_te.last_timestamp, 1);
 
 		/* filtering algorithm */
 		if ((mode->timing.h_skew == STANDARD_ADFR) || (mode->timing.h_skew == STANDARD_MFR)) {
@@ -6175,6 +6175,13 @@ ssize_t oplus_adfr_set_test_te_attr(struct kobject *obj,
 	OPLUS_ADFR_TRACE_BEGIN("oplus_adfr_set_test_te_attr");
 
 	sscanf(buf, "%u", &test_te_config);
+	if ((p_oplus_adfr_params->test_te.config != OPLUS_ADFR_TEST_TE_DISABLE) ==
+	    (test_te_config != OPLUS_ADFR_TEST_TE_DISABLE)) {
+		p_oplus_adfr_params->test_te.config = test_te_config;
+		OPLUS_ADFR_TRACE_END("oplus_adfr_set_test_te_attr");
+		return count;
+	}
+	p_oplus_adfr_params->test_te.last_timestamp = (u64)ktime_to_ms(ktime_get());
 
 	p_oplus_adfr_params->test_te.config = test_te_config;
 	ADFR_INFO("oplus_adfr_test_te_config:%u\n", p_oplus_adfr_params->test_te.config);
@@ -6242,7 +6249,7 @@ ssize_t oplus_adfr_get_test_te_attr(struct kobject *obj,
 		refresh_rate = p_oplus_adfr_params->test_te.refresh_rate;
 	}
 
-	ADFR_INFO("oplus_adfr_test_te_refresh_rate:%u\n", refresh_rate);
+	ADFR_DEBUG("oplus_adfr_test_te_refresh_rate:%u\n", refresh_rate);
 
 	OPLUS_ADFR_TRACE_END("oplus_adfr_get_test_te_attr");
 
